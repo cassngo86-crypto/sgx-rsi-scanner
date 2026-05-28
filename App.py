@@ -52,9 +52,10 @@ selected_names = st.multiselect(
     default=list(st.session_state.master_watchlist.keys())
 )
 
-# --- 4. DATA ENGINE (PERMANENT FIXED CALCULATION LAYER) ---
+# --- 4. DATA ENGINE (WITH AUTOMATED DAILY CACHE INVALIDATION) ---
 @st.cache_data(ttl=1800)
-def get_stock_metrics(ticker):
+def get_stock_metrics(ticker, current_date):
+    # 'current_date' is passed purely to force Streamlit to bust the cache every single day automatically.
     try:
         ticker_obj = yf.Ticker(ticker)
         
@@ -73,23 +74,17 @@ def get_stock_metrics(ticker):
         dividends_history = ticker_obj.dividends
         
         if not dividends_history.empty:
-            # Look back exactly 365 days from today
-            one_year_ago = pd.Timestamp.now(tz=dividends_history.index.tz) - pd.Timedelta(days=365)
+            # Look back exactly 365 days from the active current_date timestamp
+            one_year_ago = pd.Timestamp(current_date, tz=dividends_history.index.tz) - pd.Timedelta(days=365)
             last_year_divs = dividends_history[dividends_history.index >= one_year_ago]
             total_cash_payout = float(last_year_divs.sum())
             
             if total_cash_payout > 0:
-                # CATCH CENT SCALING ERROR: If the raw payout value reads higher than 
-                # the share price, the backend logged the history tracking in cents.
                 if total_cash_payout > current_price:
                     total_cash_payout = total_cash_payout / 100.0
                 
-                # Perform the absolute mathematical percentage extraction
                 clean_yield = (total_cash_payout / current_price) * 100.0
         
-        # CRITICAL RE-ALIGNMENT CHECK FOR HIGH-YIELD COUNTERS:
-        # If any calculation lands outside standard parameters (e.g., above 15.0%),
-        # scale the decimals to correct formatting differences.
         if clean_yield > 15.0:
             clean_yield = clean_yield / 10.0 if (clean_yield / 10.0) <= 15.0 else clean_yield / 100.0
             
@@ -105,6 +100,7 @@ def get_stock_metrics(ticker):
     except:
         return None, 0.0
 
+
 # --- 5. VISUAL MULTI-COLUMN CARD INTERFACE GRID ---
 NUM_COLS = 4  
 
@@ -113,6 +109,9 @@ if not selected_names:
 else:
     active_batch = [(name, st.session_state.master_watchlist[name]) for name in selected_names]
     
+    # Track today's date dynamically at the start of the layout loop
+    today_str = pd.Timestamp.now().strftime("%Y-%m-%d")
+    
     for i in range(0, len(active_batch), NUM_COLS):
         row_slice = active_batch[i:i + NUM_COLS]
         cols = st.columns(NUM_COLS)
@@ -120,7 +119,8 @@ else:
         for idx, (name, ticker) in enumerate(row_slice):
             with cols[idx]:
                 with st.container(border=True):
-                    df, yield_value = get_stock_metrics(ticker)
+                    # Pass the date string straight into your data engine function call
+                    df, yield_value = get_stock_metrics(ticker, today_str)
                     
                     if df is not None:
                         current_price = float(df['Close'].iloc[-1])
